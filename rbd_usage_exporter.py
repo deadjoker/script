@@ -14,7 +14,7 @@
 #
 #              get help of this script, add -h or --help param:
 #
-#                  rbd_du_exporter.py -h
+#                  rbd_usage_exporter.py -h
 #
 # License:     GPL3
 #
