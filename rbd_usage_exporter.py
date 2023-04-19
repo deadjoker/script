@@ -53,6 +53,10 @@ class RBDUsageCollector(object):
 
 
     def collect_to_file(self):
+        """
+        collect metrics to data file, so that self.collect can 
+        get metrics from this file and export to prometheus.
+        """
         start = time.time()
 
         rbd_pools = self._get_pool()
@@ -71,7 +75,7 @@ class RBDUsageCollector(object):
 
     def collect(self):
         """
-        collect metrics from data file generates from collect_to_file
+        collect metrics from data file generates from self.collect_to_file
         """
         
         self._setup_empty_prometheus_metrics()
