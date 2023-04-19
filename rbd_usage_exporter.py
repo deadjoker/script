@@ -26,10 +26,12 @@ import os
 import threading
 import time
 import json
+import re
 import argparse
 import subprocess
 
-from flask import Flask
+from prometheus_client import start_http_server
+from prometheus_client.core import GaugeMetricFamily, REGISTRY
 
 
 class RBDUsageCollector(object):
@@ -50,19 +52,8 @@ class RBDUsageCollector(object):
         self.keyring = keyring
 
 
-    def collect(self):
+    def collect_to_file(self):
         start = time.time()
-
-        # add style to html in order to prettify the web page
-        self._write_to_file('<pre style="word-wrap: break-word; white-space: pre-wrap;">')
-
-        # add information of the metrics
-        self._write_to_file('# HELP rbd_usage_bytes RBD used space in bytes')
-        self._write_to_file('# TYPE rbd_usage_bytes gauge')
-        self._write_to_file('# HELP rbd_total_provision_bytes RBD total size in bytes')
-        self._write_to_file('# TYPE rbd_total_provision_bytes gauge')
-        self._write_to_file('# HELP scrape_duration_seconds Duration of collecting in seconds')
-        self._write_to_file('# TYPE scrape_start_time gauge')
 
         rbd_pools = self._get_pool()
         if rbd_pools:
@@ -74,10 +65,58 @@ class RBDUsageCollector(object):
         duration = time.time() - start
 
         self._write_to_file('scrape_duration_seconds {}'.format(duration))
-        self._write_to_file('</pre>')
 
         self._rename_tmp()
 
+
+    def collect(self):
+        """
+        collect metrics from data file generates from collect_to_file
+        """
+        
+        self._setup_empty_prometheus_metrics()
+        
+        with open('/tmp/rbd_usage.prom', 'r') as f:
+            for line in f:
+                match = re.match(r'^(\w+)\{(.+?)\}\s+([\d\.]+)$', line.strip())
+                if match:
+                    metric_name = match.group(1)
+                    label_str = match.group(2)
+                    metric_labels = dict(re.findall(r'(\w+)="(.+?)"(?:,|$)', label_str))
+                    metric_value = float(match.group(3))
+                    self._prometheus_metrics[metric_name].add_metric(
+                        [metric_labels['image'], metric_labels['pool'], metric_labels['id']],
+                        metric_value
+                    )
+                else:
+                    metric_name = line.split()[0]
+                    metric_value = line.split()[1]
+                    self._prometheus_metrics[metric_name].add_metric([], metric_value)
+                    
+        for metric in list(self._prometheus_metrics.values()):
+            yield metric
+
+
+    def _setup_empty_prometheus_metrics(self):
+        """
+        The metrics we want to export.
+        """
+
+        self._prometheus_metrics = {
+            'rbd_usage_bytes':
+                GaugeMetricFamily('rbd_usage_bytes',
+                                  'RBD used space in bytes',
+                                  labels=["image", "pool", "id"]),
+            'rbd_total_provision_bytes':
+                GaugeMetricFamily('rbd_total_provision_bytes',
+                                  'RBD total size bytes provisioned',
+                                  labels=["image", "pool", "id"]),
+            'scrape_duration_seconds':
+                GaugeMetricFamily('scrape_duration_seconds',
+                                  'Ammount of time each scrape takes',
+                                  labels=[])
+        }
+        
 
     def _get_pool(self):
         """
@@ -147,7 +186,7 @@ class RBDUsageCollector(object):
         file = '/tmp/rbd_usage.prom.tmp'
         try:
             with open(file, 'a') as f:
-                f.write(data + "\n")
+                f.write(data + "\r\n")
         except Exception as e:
             print(e)
 
@@ -225,34 +264,31 @@ def collect_metrics():
 
     while True:
         try:
-            collector.collect()
+            collector.collect_to_file()
         except Exception as e:
             print(e)
+    
 
+def http_server():
+    try:
+        args = parse_args()
+        REGISTRY.register(RBDUsageCollector(
+            args.cluster, args.conf, args.keyring))
 
-def flask_out():
-    app = Flask(__name__)
+        start_http_server(args.port)
+        print(("Polling {0}. Serving at port: {1}".format(args.host, args.port)))
 
-    @app.route("/metrics", methods=['GET'])
-    def getfile():
-        file = '/tmp/rbd_usage.prom'
-
-        if not os.path.exists(file):
-            with open(file, "w") as f:
-                f.write('')
-
-        with open(file, "r") as f:
-            data = f.read()
-            return data
-
-    args = parse_args()
-    app.run(host=args.host, port=args.port)
+        while True:
+            time.sleep(1)
+    except KeyboardInterrupt:
+        print("\nInterrupted")
+        exit(0)
 
 
 
 if __name__ == "__main__":
-    t_collect = threading.Thread(target=collect_metrics)
-    t_flask = threading.Thread(target=flask_out)
+    t_collect_metrics = threading.Thread(target=collect_metrics)
+    t_http_server = threading.Thread(target=http_server)
 
-    t_collect.start()
-    t_flask.start()
+    t_collect_metrics.start()
+    t_http_server.start()
