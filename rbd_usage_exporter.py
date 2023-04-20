@@ -143,8 +143,9 @@ class RBDUsageCollector(object):
     def _get_usage(self, pool):
         """
         get all usage and total size provisioned of rbd in bytes.
-        if image has object_map feature, calculate by its object_map,
-        else use 'rbd du image'.
+        use 'rbd du' other than object-map because of the high
+        time cost when calculate by object-map, while not all images
+        have object-map feature.
         :param pool: str, rbd in this pool will be calculated usage.
         :return: a list of rbd usage, for example:
         [{'name':'abc', 'id': '12345', 'provisioned_size: 1000, 'used_size': 500}]
